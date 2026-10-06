@@ -35,6 +35,12 @@ class RadarInterface(RadarInterfaceBase):
 
     self.valid_cnt = {key: 0 for key in self.RADAR_A_MSGS}
 
+    # Debounce counter for RADAR_PRE_FAULT to avoid false positives from transient INVALID_COUNTER spikes.
+    # INVALID_COUNTER fluctuates around the pre-fault threshold (1358) under marginal obstruction conditions,
+    # causing RADAR_PRE_FAULT to toggle between 0 and 3. Only flag temporary unavailability after sustained faults.
+    self.pre_fault_cnt = 0
+    self.PRE_FAULT_THRESHOLD = 3  # consecutive frames with RADAR_PRE_FAULT != 0 before marking unavailable
+
     self.rcp = None if CP.radarUnavailable else _create_radar_can_parser(CP)
     self.trigger_msg = self.RADAR_B_MSGS[-1]
     self.updated_messages = set()
@@ -59,8 +65,16 @@ class RadarInterface(RadarInterfaceBase):
     if not self.rcp.can_valid:
       ret.errors.canError = True
 
-    if self.rcp.vl['STATUS_MSG']['RADAR_STATUS'] != 1 or self.rcp.vl['STATUS_MSG']['RADAR_PRE_FAULT'] != 0:
-      ret.errors.radarUnavailableTemporary = True
+    pre_fault = self.rcp.vl['STATUS_MSG']['RADAR_PRE_FAULT']
+    if self.rcp.vl['STATUS_MSG']['RADAR_STATUS'] != 1 or pre_fault != 0:
+      if pre_fault != 0:
+        self.pre_fault_cnt += 1
+      else:
+        # Reset debounce counter when RADAR_PRE_FAULT clears (RADAR_STATUS != 1 still counts as unavailable)
+        self.pre_fault_cnt = 0
+
+      if self.pre_fault_cnt >= self.PRE_FAULT_THRESHOLD:
+        ret.errors.radarUnavailableTemporary = True
 
     for ii in sorted(updated_messages):
       if ii in self.RADAR_A_MSGS:
